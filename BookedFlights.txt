@@ -1,1 +1,2 @@
-AA234 - New York: 1A
+CX890 - Hong Kong: 16C | SERVICES:F1,D1,C1 | COST:$21.00
+TK193 - Istanbul: 8D | SERVICES:F3,D6,C4 | COST:$24.00
