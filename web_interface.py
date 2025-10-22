@@ -53,9 +53,76 @@ def api_book():
         save_flights(flights)
         return jsonify({'success': False, 'error': 'Booking failed'})
 
+def load_bookings_web():
+    bookings = []
+    try:
+        with open(BOOKED_FILE, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                booking = {"raw_line": line}
+                
+                if ":" in line:
+                    flight_info, seat = line.split(":")
+                    flight_number, destination = flight_info.split(" - ")
+                    booking.update({
+                        "flightNumber": flight_number.strip(),
+                        "destination": destination.strip(),
+                        "seat": seat.strip()
+                    })
+                
+                bookings.append(booking)
+                
+    except FileNotFoundError:
+        pass
+        
+    return bookings
+
+@app.route('/api/bookings')
+def api_bookings():
+    bookings = load_bookings_web()
+    return jsonify(bookings)
+
+@app.route('/api/cancel-booking', methods=['POST'])
+def api_cancel_booking():
+    data = request.get_json()
+    booking_index = data['bookingIndex']
+    
+    bookings = load_bookings_web()
+    flights = load_flights()
+    
+    if booking_index >= len(bookings):
+        return jsonify({'success': False, 'error': 'Invalid booking'})
+    
+    booking = bookings[booking_index]
+    
+    # Add seat back to available seats
+    if booking['flightNumber'] in flights:
+        flights[booking['flightNumber']]['seats'].append(booking['seat'])
+        flights[booking['flightNumber']]['seats'].sort()
+    
+    # Remove booking by rewriting the file without this booking
+    try:
+        with open(BOOKED_FILE, "r") as f:
+            all_lines = f.readlines()
+        
+        # Remove the specific line
+        if 0 <= booking_index < len(all_lines):
+            all_lines.pop(booking_index)
+            
+        with open(BOOKED_FILE, "w") as f:
+            f.writelines(all_lines)
+            
+        save_flights(flights)
+        return jsonify({'success': True})
+        
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
 if __name__ == '__main__':
     os.makedirs('templates', exist_ok=True)
-    
     
     #Basic HTML template
     with open('templates/index.html', 'w') as f:
@@ -85,25 +152,73 @@ if __name__ == '__main__':
             background-color: #3b82f6;
             color: white;
         }
+        .tab-button {
+            padding: 12px 24px;
+            border: none;
+            background: none;
+            cursor: pointer;
+        }
+        .tab-button.active {
+            border-bottom: 2px solid #3b82f6;
+            color: #3b82f6;
+        }
     </style>
 </head>
 <body class="bg-gray-50">
     <div class="container mx-auto py-8">
-        <h1 class="text-3xl font-bold mb-6">Available Flights</h1>
-        <div id="flightsList"></div>
-        <div id="seatSelection" class="hidden"></div>
+        <h1 class="text-3xl font-bold mb-6">Flight Management System</h1>
+        
+        <div class="bg-white rounded-lg shadow border">
+            <div class="border-b">
+                <button id="bookTab" class="tab-button active" onclick="showTab('book')">
+                    Book Flight
+                </button>
+                <button id="manageTab" class="tab-button" onclick="showTab('manage')">
+                    My Bookings
+                </button>
+            </div>
+            
+            <div id="bookContent" class="p-6">
+                <div id="flightsList"></div>
+                <div id="seatSelection" class="hidden"></div>
+            </div>
+            
+            <div id="manageContent" class="p-6 hidden">
+                <h2 class="text-xl font-semibold mb-4">My Bookings</h2>
+                <div id="bookingsList"></div>
+            </div>
+        </div>
     </div>
 
     <script>
         let currentFlight = null;
         let currentSeat = null;
 
+        function showTab(tabName) {
+            // Hide all content
+            document.getElementById('bookContent').classList.add('hidden');
+            document.getElementById('manageContent').classList.add('hidden');
+            
+            // Remove active styles
+            document.querySelectorAll('.tab-button').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Show selected content
+            document.getElementById(tabName + 'Content').classList.remove('hidden');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+            
+            if (tabName === 'manage') {
+                loadBookings();
+            }
+        }
+
         async function loadFlights() {
             const response = await fetch('/api/flights');
             const flights = await response.json();
             
             const container = document.getElementById('flightsList');
-            container.innerHTML = '';
+            container.innerHTML = '<h2 class="text-xl font-semibold mb-4">Available Flights</h2>';
             
             for (const [flightNumber, info] of Object.entries(flights)) {
                 const flightCard = `
@@ -170,6 +285,7 @@ if __name__ == '__main__':
         function showFlights() {
             document.getElementById('flightsList').classList.remove('hidden');
             document.getElementById('seatSelection').classList.add('hidden');
+            loadFlights();
         }
 
         async function bookSeat() {
@@ -189,6 +305,47 @@ if __name__ == '__main__':
                 loadFlights();
             } else {
                 alert('Booking failed: ' + result.error);
+            }
+        }
+
+        async function loadBookings() {
+            const response = await fetch('/api/bookings');
+            const bookings = await response.json();
+            
+            const container = document.getElementById('bookingsList');
+            
+            if (bookings.length === 0) {
+                container.innerHTML = '<p class="text-gray-500">No bookings found.</p>';
+                return;
+            }
+            
+            container.innerHTML = bookings.map((booking, index) => `
+                <div class="bg-white border rounded-lg p-4 mb-4">
+                    <h3 class="text-lg font-semibold">${booking.flightNumber}</h3>
+                    <p class="text-gray-600">${booking.destination} - Seat ${booking.seat}</p>
+                    <button onclick="cancelBooking(${index})" 
+                            class="mt-2 bg-red-500 text-white px-4 py-2 rounded">
+                        Cancel Booking
+                    </button>
+                </div>
+            `).join('');
+        }
+
+        async function cancelBooking(bookingIndex) {
+            if (confirm('Are you sure you want to cancel this booking?')) {
+                const response = await fetch('/api/cancel-booking', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ bookingIndex: bookingIndex })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    alert('Booking cancelled successfully!');
+                    loadBookings();
+                } else {
+                    alert('Cancellation failed: ' + result.error);
+                }
             }
         }
         
